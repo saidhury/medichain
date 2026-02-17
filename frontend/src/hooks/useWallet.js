@@ -1,8 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const api = axios.create({
+  baseURL: '/api',
+  headers: { 'Content-Type': 'application/json' }
+});
 
 export const useWallet = () => {
   const [account, setAccount] = useState(null);
@@ -10,83 +13,130 @@ export const useWallet = () => {
   const [signer, setSigner] = useState(null);
   const [role, setRole] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState(null);
+  const [isMetaMaskConnected, setIsMetaMaskConnected] = useState(false);
+  
+  const listenersSetup = useRef(false);
 
-  const connectWallet = useCallback(async (selectedRole = null) => {
+  // Setup MetaMask listeners
+  useEffect(() => {
+    if (window.ethereum && !listenersSetup.current) {
+      listenersSetup.current = true;
+      
+      const handleAccountsChanged = (accounts) => {
+        console.log('MetaMask accounts changed:', accounts);
+        if (accounts.length === 0) {
+          // User disconnected
+          disconnectWallet();
+        } else {
+          // Account switched - update state
+          const newAddress = accounts[0].toLowerCase();
+          setAccount(newAddress);
+          // Re-fetch role for new account
+          fetchUserRole(newAddress);
+        }
+      };
+
+      const handleChainChanged = () => {
+        window.location.reload();
+      };
+
+      window.ethereum.on('accountsChanged', handleAccountsChanged);
+      window.ethereum.on('chainChanged', handleChainChanged);
+
+      // Check if already connected
+      window.ethereum.request({ method: 'eth_accounts' })
+        .then(accounts => {
+          if (accounts.length > 0) {
+            setAccount(accounts[0].toLowerCase());
+            setIsMetaMaskConnected(true);
+            fetchUserRole(accounts[0].toLowerCase());
+            
+            // Setup provider
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            setProvider(provider);
+            provider.getSigner().then(signer => setSigner(signer));
+          }
+        });
+
+      return () => {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
+      };
+    }
+  }, []);
+
+  const fetchUserRole = async (address) => {
+    try {
+      const response = await api.get(`/users/${address}/`);
+      setRole(response.data.role);
+    } catch (error) {
+      // User not registered yet
+      setRole(null);
+    }
+  };
+
+  const connectWallet = useCallback(async (selectedRole) => {
     if (!window.ethereum) {
-      alert('Please install MetaMask!');
+      setError('MetaMask not installed');
       return;
     }
 
     setIsConnecting(true);
+    setError(null);
 
     try {
-      // Request account access
+      // This will prompt user to connect if not already
       const accounts = await window.ethereum.request({ 
         method: 'eth_requestAccounts' 
       });
       
       const address = accounts[0].toLowerCase();
       
-      // Create provider and signer
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       
       setAccount(address);
       setProvider(provider);
       setSigner(signer);
+      setIsMetaMaskConnected(true);
 
-      // Check if user exists in backend
+      // Register or fetch user
       try {
-        const response = await axios.get(`${API_URL}/api/users/${address}/`);
+        const response = await api.get(`/users/${address}/`);
         setRole(response.data.role);
       } catch (error) {
-        // User not found, register if role selected
         if (selectedRole) {
-          const registerRes = await axios.post(`${API_URL}/api/users/register/`, {
+          const registerRes = await api.post(`/users/register/`, {
             wallet_address: address,
             role: selectedRole
           });
           setRole(registerRes.data.user.role);
-        } else {
-          setRole(null); // Will show role selection
         }
       }
 
-      // Listen for account changes
-      window.ethereum.on('accountsChanged', handleAccountsChanged);
-      window.ethereum.on('chainChanged', () => window.location.reload());
-
     } catch (error) {
-      console.error('Error connecting wallet:', error);
-      alert('Failed to connect wallet');
+      console.error('Error connecting:', error);
+      setError(error.message);
     } finally {
       setIsConnecting(false);
     }
   }, []);
-
-  const handleAccountsChanged = (accounts) => {
-    if (accounts.length === 0) {
-      disconnectWallet();
-    } else {
-      setAccount(accounts[0].toLowerCase());
-    }
-  };
 
   const disconnectWallet = useCallback(() => {
     setAccount(null);
     setProvider(null);
     setSigner(null);
     setRole(null);
-    if (window.ethereum) {
-      window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
-    }
+    setIsMetaMaskConnected(false);
+    setError(null);
   }, []);
 
-  const switchRole = async (newRole) => {
+  const switchRole = useCallback(async (newRole) => {
     if (!account) return;
     
     try {
-      await axios.post(`${API_URL}/api/users/register/`, {
+      await api.post(`/users/register/`, {
         wallet_address: account,
         role: newRole
       });
@@ -94,7 +144,7 @@ export const useWallet = () => {
     } catch (error) {
       console.error('Error switching role:', error);
     }
-  };
+  }, [account]);
 
   return {
     account,
@@ -102,6 +152,8 @@ export const useWallet = () => {
     signer,
     role,
     isConnecting,
+    isMetaMaskConnected,
+    error,
     connectWallet,
     disconnectWallet,
     switchRole

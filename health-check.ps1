@@ -1,9 +1,15 @@
 # health-check.ps1 - Complete System Health Check
 param([switch]$Verbose)
 
+# health-check.ps1 - Complete System Health Check
+param([switch]$Verbose)
+
+$scriptDir = Split-Path $MyInvocation.MyCommand.Path
+Set-Location $scriptDir
+
 $services = @(
     @{ Name = "Encryption Service"; Url = "http://localhost:8001/health"; Port = 8001 },
-    @{ Name = "Django Backend"; Url = "http://localhost:8000/api/users/doctors/list/"; Port = 8000 },
+    @{ Name = "Django Backend"; Url = "http://localhost:8002/api/users/doctors/list/"; Port = 8002 },
     @{ Name = "React Frontend"; Url = "http://localhost:5173"; Port = 5173 }
 )
 
@@ -50,6 +56,9 @@ foreach ($svc in $services) {
 Write-Host ""
 Write-Host "Configuration Check:" -ForegroundColor Cyan
 $envFile = Get-Content ".env" -ErrorAction SilentlyContinue
+# .env relative to scriptDir
+$envFilePath = Join-Path $scriptDir ".env"
+$envFile = Get-Content $envFilePath -ErrorAction SilentlyContinue
 
 if ($envFile) {
     $contractAddress = ($envFile | Select-String "CONTRACT_ADDRESS=").Line -replace "CONTRACT_ADDRESS=", ""
@@ -89,8 +98,8 @@ if ($allHealthy) {
     Write-Host ""
     Write-Host "Access Points:" -ForegroundColor Cyan
     Write-Host "   Frontend:  http://localhost:5173"
-    Write-Host "   Backend:   http://localhost:8000/api/"
-    Write-Host "   Admin:     http://localhost:8000/admin/ (admin/admin123)"
+    Write-Host "   Backend:   http://localhost:8002/api/"
+    Write-Host "   Admin:     http://localhost:8002/admin/ (admin/admin123)"
     Write-Host "   Encryption: http://localhost:8001"
 } else {
     Write-Host "❌ SOME ISSUES DETECTED" -ForegroundColor Red

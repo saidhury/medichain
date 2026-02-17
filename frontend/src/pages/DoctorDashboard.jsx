@@ -1,13 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useContract } from '../hooks/useContract';
 import { useWallet } from '../hooks/useWallet';
 import axios from 'axios';
-import { Upload, Search, CheckCircle, AlertTriangle, Download, FileText } from 'lucide-react';
+import { Upload, Search, CheckCircle, FileText, Download, ExternalLink, Shield, AlertTriangle } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const ENCRYPTION_API = import.meta.env.VITE_ENCRYPTION_API || 'http://localhost:8001';
+const api = axios.create({
+  baseURL: '/api',
+  headers: {
+    'Content-Type': 'application/json',
+  }
+});
 
-const DoctorDashboard = ({ account }) => {
+const ENCRYPTION_API = 'http://localhost:8001';
+
+const DoctorDashboard = ({ account, isManualLogin }) => {
   const { signer } = useWallet();
   const { addRecord, getRecords, hasAccess, loading: contractLoading } = useContract(signer);
   
@@ -19,21 +25,31 @@ const DoctorDashboard = ({ account }) => {
   const [searchAddress, setSearchAddress] = useState('');
   const [hasPatientAccess, setHasPatientAccess] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [verificationResults, setVerificationResults] = useState({});
 
   const handleFileSelect = (e) => {
     setSelectedFile(e.target.files[0]);
   };
 
   const handleUpload = async () => {
+    if (isManualLogin) {
+      alert('File upload requires MetaMask connection. Please login with MetaMask to use this feature.');
+      return;
+    }
+
     if (!selectedFile || !patientAddress) {
       alert('Please select a file and enter patient address');
+      return;
+    }
+
+    if (!patientAddress.startsWith('0x') || patientAddress.length !== 42) {
+      alert('Please enter a valid Ethereum address (0x...)');
       return;
     }
 
     setUploadProgress('Encrypting file...');
     
     try {
-      // Step 1: Encrypt file via FastAPI
       const formData = new FormData();
       formData.append('file', selectedFile);
 
@@ -44,7 +60,6 @@ const DoctorDashboard = ({ account }) => {
       const { encrypted_content, iv, key, hash } = encryptRes.data;
       setUploadProgress('Uploading to IPFS...');
 
-      // Step 2: Create blob from encrypted content and upload to IPFS via Django
       const encryptedBlob = new Blob([Buffer.from(encrypted_content, 'base64')]);
       const ipfsFormData = new FormData();
       ipfsFormData.append('encrypted_file', encryptedBlob, selectedFile.name + '.enc');
@@ -53,7 +68,7 @@ const DoctorDashboard = ({ account }) => {
       ipfsFormData.append('file_hash', hash);
       ipfsFormData.append('filename', selectedFile.name);
 
-      const uploadRes = await axios.post(`${API_URL}/api/records/upload/`, ipfsFormData, {
+      const uploadRes = await api.post(`/records/upload/`, ipfsFormData, {
         headers: {
           'Content-Type': 'multipart/form-data',
           'X-Wallet-Address': account
@@ -63,22 +78,22 @@ const DoctorDashboard = ({ account }) => {
       const { ipfs_cid, record_id } = uploadRes.data;
       setUploadProgress('Recording on blockchain...');
 
-      // Step 3: Add to blockchain
       const blockchainRes = await addRecord(
         patientAddress.toLowerCase(),
         ipfs_cid,
         hash
       );
 
-      // Step 4: Update transaction hash in backend
-      await axios.post(`${API_URL}/api/records/${record_id}/tx/`, {
+      await api.post(`/records/${record_id}/tx/`, {
         tx_hash: blockchainRes.txHash
       });
 
-      setUploadProgress('Complete!');
-      alert('Record uploaded successfully!');
-      setSelectedFile(null);
-      setPatientAddress('');
+      setUploadProgress('Complete! ✓');
+      setTimeout(() => {
+        setUploadProgress('');
+        setSelectedFile(null);
+        setPatientAddress('');
+      }, 3000);
       
     } catch (error) {
       console.error('Upload error:', error);
@@ -87,7 +102,15 @@ const DoctorDashboard = ({ account }) => {
   };
 
   const searchPatientRecords = async () => {
-    if (!searchAddress) return;
+    if (isManualLogin) {
+      alert('Viewing patient records requires MetaMask connection. Please login with MetaMask to use this feature.');
+      return;
+    }
+
+    if (!searchAddress || !searchAddress.startsWith('0x')) {
+      alert('Please enter a valid patient address');
+      return;
+    }
     
     try {
       const access = await hasAccess(searchAddress.toLowerCase(), account);
@@ -95,29 +118,55 @@ const DoctorDashboard = ({ account }) => {
       
       if (access) {
         const records = await getRecords(searchAddress.toLowerCase());
-        setPatientRecords(records);
+        // Enrich with backend data
+        const enrichedRecords = await Promise.all(
+          records.map(async (record) => {
+            try {
+              const res = await api.get(`/records/cid/${record.ipfsCID}/`);
+              return { ...record, txHash: res.data.tx_hash, recordId: res.data.record_id };
+            } catch {
+              return record;
+            }
+          })
+        );
+        setPatientRecords(enrichedRecords);
       } else {
         setPatientRecords([]);
-        alert('You do not have access to this patient\'s records');
+        alert('You do not have access to this patient\'s records. Ask the patient to grant you access first.');
       }
     } catch (error) {
       console.error('Error searching records:', error);
+      alert('Error fetching records: ' + error.message);
     }
   };
 
   const verifyRecord = async (record) => {
-    setVerifying(true);
+    setVerifying(record.ipfsCID);
     try {
-      // Fetch from IPFS
       const response = await fetch(`https://gateway.pinata.cloud/ipfs/${record.ipfsCID}`);
+      if (!response.ok) throw new Error('Failed to fetch from IPFS');
+      
       const blob = await response.blob();
       const arrayBuffer = await blob.arrayBuffer();
-      const base64Content = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64Content = btoa(binary);
       
-      // Verify via FastAPI
       const verifyRes = await axios.post(`${ENCRYPTION_API}/verify`, {
         file_content_base64: base64Content,
         expected_hash: record.fileHash
+      });
+
+      setVerificationResults({
+        ...verificationResults,
+        [record.ipfsCID]: {
+          verified: verifyRes.data.verified,
+          tampered: verifyRes.data.tampered,
+          message: verifyRes.data.message
+        }
       });
 
       if (verifyRes.data.tampered) {
@@ -128,91 +177,160 @@ const DoctorDashboard = ({ account }) => {
     } catch (error) {
       alert('Error verifying file: ' + error.message);
     } finally {
-      setVerifying(false);
+      setVerifying(null);
     }
   };
 
   const formatDate = (timestamp) => {
+    if (!timestamp) return 'N/A';
     return new Date(timestamp * 1000).toLocaleString();
   };
 
+  const truncateHash = (hash) => {
+    if (!hash) return 'N/A';
+    return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+  };
+
+  const getEtherscanLink = (txHash) => {
+    if (!txHash) return '#';
+    return `https://sepolia.etherscan.io/tx/${txHash}`;
+  };
+
   return (
-    <div className="doctor-dashboard">
-      <h1 style={{ marginBottom: '2rem' }}>Doctor Dashboard</h1>
+    <div className="dashboard">
+      {isManualLogin && (
+        <div style={{ 
+          marginBottom: '1.5rem',
+          padding: '1rem',
+          background: 'rgba(245, 158, 11, 0.1)',
+          border: '1px solid var(--warning)',
+          borderRadius: 'var(--radius)',
+          color: 'var(--warning)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem'
+        }}>
+          <AlertTriangle size={20} />
+          <div>
+            <strong>Test Mode Active</strong>
+            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.9rem' }}>
+              Blockchain features are disabled. Connect with MetaMask for full functionality.
+            </p>
+          </div>
+        </div>
+      )}
+      <div className="dashboard-header">
+        <h1>Doctor Dashboard</h1>
+        <div className="wallet-display">
+          <FileText size={16} />
+          {account}
+        </div>
+      </div>
       
-      <div className="tabs" style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid var(--border-color)' }}>
+      <div className="tabs">
         <button 
-          className={`btn ${activeTab === 'upload' ? 'btn-primary' : ''}`}
+          className={`tab ${activeTab === 'upload' ? 'active' : ''}`}
           onClick={() => setActiveTab('upload')}
-          style={{ background: activeTab === 'upload' ? 'var(--accent-primary)' : 'transparent' }}
         >
-          <Upload size={16} style={{ marginRight: '0.5rem' }} />
+          <Upload size={18} />
           Upload Record
         </button>
         <button 
-          className={`btn ${activeTab === 'records' ? 'btn-primary' : ''}`}
+          className={`tab ${activeTab === 'records' ? 'active' : ''}`}
           onClick={() => setActiveTab('records')}
-          style={{ background: activeTab === 'records' ? 'var(--accent-primary)' : 'transparent' }}
         >
-          <FileText size={16} style={{ marginRight: '0.5rem' }} />
+          <FileText size={18} />
           View Records
         </button>
       </div>
 
       {activeTab === 'upload' && (
-        <div className="upload-section">
-          <div className="card">
-            <h2 style={{ marginBottom: '1.5rem' }}>Upload Medical Record</h2>
-            
-            <div className="form-group">
-              <label className="form-label">Patient Wallet Address</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="0x..."
-                value={patientAddress}
-                onChange={(e) => setPatientAddress(e.target.value)}
-              />
-            </div>
+        <div className="card">
+          <h2 className="card-title">
+            <Upload size={24} />
+            Upload Medical Record
+          </h2>
+          
+          <div className="form-group">
+            <label className="form-label">Patient Wallet Address</label>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="0x..."
+              value={patientAddress}
+              onChange={(e) => setPatientAddress(e.target.value)}
+            />
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '0.25rem' }}>
+              You must have been granted access by this patient to upload records
+            </p>
+          </div>
 
-            <div className="form-group">
-              <label className="form-label">Medical Record File</label>
+          <div className="form-group">
+            <label className="form-label">Medical Record File</label>
+            <div className="file-input-wrapper">
               <input
                 type="file"
-                className="form-input"
+                id="file-input"
+                className="file-input"
                 onChange={handleFileSelect}
-                style={{ padding: '0.5rem' }}
               />
-              {selectedFile && (
-                <p style={{ marginTop: '0.5rem', color: 'var(--text-secondary)' }}>
-                  Selected: {selectedFile.name} ({(selectedFile.size / 1024).toFixed(2)} KB)
-                </p>
-              )}
+              <label htmlFor="file-input" className="file-input-label">
+                <Upload size={24} />
+                {selectedFile ? selectedFile.name : 'Click to select file or drag and drop'}
+              </label>
             </div>
-
-            {uploadProgress && (
-              <div className="alert alert-success" style={{ marginBottom: '1rem' }}>
-                {uploadProgress}
+            {selectedFile && (
+              <div className="file-selected">
+                <CheckCircle size={16} />
+                {selectedFile.name} ({(selectedFile.size / 1024).toFixed(2)} KB) - Ready to upload
               </div>
             )}
-
-            <button 
-              className="btn btn-primary" 
-              onClick={handleUpload}
-              disabled={!selectedFile || !patientAddress || contractLoading}
-              style={{ width: '100%' }}
-            >
-              <Upload size={16} style={{ marginRight: '0.5rem' }} />
-              {contractLoading ? 'Processing...' : 'Upload & Encrypt Record'}
-            </button>
           </div>
+
+          {uploadProgress && (
+            <>
+              <div className="progress-bar">
+                <div 
+                  className="progress-fill" 
+                  style={{ 
+                    width: uploadProgress.includes('Complete') ? '100%' : 
+                           uploadProgress.includes('blockchain') ? '75%' :
+                           uploadProgress.includes('IPFS') ? '50%' : '25%'
+                  }}
+                ></div>
+              </div>
+              <div className="progress-text">
+                {!uploadProgress.includes('Complete') && (
+                  <div className="spin" style={{ width: 16, height: 16, border: '2px solid var(--primary)', borderTopColor: 'transparent', borderRadius: '50%' }}></div>
+                )}
+                {uploadProgress.includes('Complete') && <CheckCircle size={16} color="var(--success)" />}
+                {uploadProgress}
+              </div>
+            </>
+          )}
+
+          <button 
+            className="btn btn-primary" 
+            onClick={handleUpload}
+            disabled={!selectedFile || !patientAddress || contractLoading || uploadProgress === 'Complete! ✓'}
+            style={{ width: '100%', marginTop: '1rem' }}
+          >
+            <Upload size={18} />
+            {contractLoading ? 'Processing...' : uploadProgress === 'Complete! ✓' ? 'Uploaded Successfully' : 'Upload & Encrypt Record'}
+          </button>
         </div>
       )}
 
       {activeTab === 'records' && (
-        <div className="records-section">
-          <div className="card" style={{ marginBottom: '1.5rem' }}>
-            <h2 style={{ marginBottom: '1rem' }}>Search Patient Records</h2>
+        <>
+          <div className="card">
+            <h2 className="card-title">
+              <Search size={24} />
+              Search Patient Records
+            </h2>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              Enter a patient's wallet address to view their records (requires access permission)
+            </p>
             <div style={{ display: 'flex', gap: '1rem' }}>
               <input
                 type="text"
@@ -220,13 +338,13 @@ const DoctorDashboard = ({ account }) => {
                 placeholder="Enter patient address (0x...)"
                 value={searchAddress}
                 onChange={(e) => setSearchAddress(e.target.value)}
-                style={{ flex: 1 }}
               />
               <button 
                 className="btn btn-primary"
                 onClick={searchPatientRecords}
+                disabled={!searchAddress}
               >
-                <Search size={16} style={{ marginRight: '0.5rem' }} />
+                <Search size={18} />
                 Search
               </button>
             </div>
@@ -234,59 +352,115 @@ const DoctorDashboard = ({ account }) => {
 
           {hasPatientAccess && patientRecords.length > 0 && (
             <div className="card">
-              <h3 style={{ marginBottom: '1.5rem' }}>
-                Records for {searchAddress.slice(0, 10)}...
+              <h3 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Shield size={20} color="var(--success)" />
+                Records for {searchAddress.slice(0, 10)}...{searchAddress.slice(-8)}
               </h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>IPFS CID</th>
-                    <th>Hash</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {patientRecords.map((record, idx) => (
-                    <tr key={idx}>
-                      <td>{formatDate(record.timestamp)}</td>
-                      <td>{record.ipfsCID.slice(0, 15)}...</td>
-                      <td>{record.fileHash.slice(0, 10)}...</td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <a
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>IPFS CID</th>
+                      <th>Transaction</th>
+                      <th>Verification</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {patientRecords.map((record, idx) => (
+                      <tr key={idx}>
+                        <td>{formatDate(record.timestamp)}</td>
+                        <td className="hash-cell">
+                          <a 
                             href={`https://gateway.pinata.cloud/ipfs/${record.ipfsCID}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="btn btn-primary"
-                            style={{ padding: '0.5rem' }}
+                            style={{ color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
                           >
-                            <Download size={16} />
+                            {record.ipfsCID.slice(0, 12)}...
+                            <ExternalLink size={12} />
                           </a>
-                          <button
-                            className="btn btn-success"
-                            onClick={() => verifyRecord(record)}
-                            disabled={verifying}
-                            style={{ padding: '0.5rem' }}
-                          >
-                            <CheckCircle size={16} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </td>
+                        <td>
+                          {record.txHash ? (
+                            <a 
+                              href={getEtherscanLink(record.txHash)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: 'var(--success)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                            >
+                              {truncateHash(record.txHash)}
+                              <ExternalLink size={12} />
+                            </a>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Pending...</span>
+                          )}
+                        </td>
+                        <td>
+                          {verificationResults[record.ipfsCID] ? (
+                            <span className={`status ${verificationResults[record.ipfsCID].tampered ? 'status-error' : 'status-success'}`}>
+                              {verificationResults[record.ipfsCID].tampered ? (
+                                <><AlertTriangle size={14} /> Tampered</>
+                              ) : (
+                                <><CheckCircle size={14} /> Verified</>
+                              )}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Not checked</span>
+                          )}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <a
+                              href={`https://gateway.pinata.cloud/ipfs/${record.ipfsCID}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn btn-primary"
+                              style={{ padding: '0.5rem' }}
+                              title="Download from IPFS"
+                            >
+                              <Download size={16} />
+                            </a>
+                            <button
+                              className="btn btn-success"
+                              onClick={() => verifyRecord(record)}
+                              disabled={verifying === record.ipfsCID}
+                              style={{ padding: '0.5rem' }}
+                              title="Verify integrity"
+                            >
+                              {verifying === record.ipfsCID ? (
+                                <div className="spin" style={{ width: 16, height: 16, border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%' }}></div>
+                              ) : (
+                                <CheckCircle size={16} />
+                              )}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
           {hasPatientAccess && patientRecords.length === 0 && (
-            <div className="card empty-state">
-              <FileText size={48} style={{ marginBottom: '1rem', opacity: 0.5 }} />
+            <div className="empty-state">
+              <FileText size={64} className="empty-state-icon" />
               <p>No records found for this patient</p>
+              <p style={{ fontSize: '0.9rem', marginTop: '0.5rem' }}>Upload a record using the Upload tab</p>
             </div>
           )}
-        </div>
+
+          {!hasPatientAccess && searchAddress && (
+            <div className="empty-state">
+              <ShieldOff size={64} className="empty-state-icon" />
+              <p>No access to this patient's records</p>
+              <p style={{ fontSize: '0.9rem', marginTop: '0.5rem' }}>The patient must grant you access first</p>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

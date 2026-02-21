@@ -110,9 +110,31 @@ class ApiService {
     });
   }
 
+  async requestWithRetry(endpoint, options = {}, maxRetries = 2) {
+    let lastError;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await this.request(endpoint, options);
+      } catch (err) {
+        lastError = err;
+        // Only retry on 500 errors (race conditions), not 404s
+        if (!err.message?.includes("500") || i === maxRetries - 1) {
+          throw err;
+        }
+        this.logger.warn(
+          `Request failed (attempt ${i + 1}), retrying...`,
+          err.message,
+        );
+        // Wait 100ms before retry
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    throw lastError;
+  }
+
   async getUser(walletAddress) {
     this.logger.debug("Fetching user:", walletAddress);
-    return this.request(`/users/${walletAddress}/`);
+    return this.requestWithRetry(`/users/${walletAddress}/`);
   }
 
   async listDoctors() {

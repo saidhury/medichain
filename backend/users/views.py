@@ -1,6 +1,8 @@
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from django.db import transaction
+from django.db.models import Q
 from .models import User
 from .serializers import UserSerializer, UserRegistrationSerializer, UserProfileUpdateSerializer
 
@@ -49,33 +51,103 @@ def register_user(request):
 
 @api_view(['GET'])
 def get_user(request, wallet_address):
-    """Get user details by wallet address"""
+    """Get user details - auto-creates from blockchain if missing"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    wallet_address = wallet_address.lower().strip()
+    
+    # First try to get existing user
     try:
-        user = User.objects.get(wallet_address=wallet_address.lower())
+        user = User.objects.get(wallet_address=wallet_address)
         return Response(UserSerializer(user).data)
     except User.DoesNotExist:
-        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
-
+        pass  # Will auto-create below
+    
+    # Auto-create user from blockchain connection
+    logger.info(f'[GetUser] Auto-creating user from blockchain: {wallet_address}')
+    
+    try:
+        # Use get_or_create to handle race conditions gracefully
+        user, created = User.objects.get_or_create(
+            wallet_address=wallet_address,
+            defaults={
+                'role': 'patient',  # Default, they can change in profile
+                'name': '',
+                'email': '',
+                'phone': '',
+                'hospital': '',
+                'specialty': '',
+                'is_active': True,
+            }
+        )
+        
+        if created:
+            logger.info(f'[GetUser] Successfully created user: {wallet_address}')
+        else:
+            logger.info(f'[GetUser] User was created by another request: {wallet_address}')
+        
+        response_data = UserSerializer(user).data
+        if created:
+            response_data['is_new'] = True
+            response_data['message'] = 'User auto-created from blockchain. Please complete your profile.'
+        
+        return Response(response_data)
+        
+    except Exception as e:
+        logger.error(f'[GetUser] Failed to auto-create user {wallet_address}: {str(e)}')
+        # If creation failed, try one more time to get (in case of race condition)
+        try:
+            user = User.objects.get(wallet_address=wallet_address)
+            return Response(UserSerializer(user).data)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Failed to create user', 'detail': str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 @api_view(['POST'])
 def update_profile(request, wallet_address):
-    """Update user profile"""
-    try:
-        user = User.objects.get(wallet_address=wallet_address.lower())
-    except User.DoesNotExist:
-        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+    """Update user profile - auto-creates if missing (handles blockchain-only users)"""
+    import logging
+    logger = logging.getLogger(__name__)
     
-    serializer = UserProfileUpdateSerializer(user, data=request.data, partial=True)
+    wallet_address = wallet_address.lower()
+    data = request.data
     
-    if serializer.is_valid():
-        serializer.save()
-        return Response({
-            'message': 'Profile updated successfully',
-            'user': UserSerializer(user).data
-        })
+    # Check if user exists, if not create them
+    user, created = User.objects.get_or_create(
+        wallet_address=wallet_address,
+        defaults={
+            'role': data.get('role', 'patient'),
+            'name': data.get('name', ''),
+            'email': data.get('email', ''),
+            'phone': data.get('phone', ''),
+            'hospital': data.get('hospital', ''),
+            'specialty': data.get('specialty', ''),
+        }
+    )
     
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+    if created:
+        logger.info(f'[UpdateProfile] Auto-created blockchain user: {wallet_address}')
+    
+    # Update with new data (merge with existing)
+    update_fields = {}
+    for field in ['name', 'email', 'phone', 'hospital', 'specialty', 'role']:
+        if field in data and data[field]:  # Only update if provided and non-empty
+            update_fields[field] = data[field]
+    
+    if update_fields:
+        for field, value in update_fields.items():
+            setattr(user, field, value)
+        user.save()
+        logger.info(f'[UpdateProfile] Updated fields for {wallet_address}: {list(update_fields.keys())}')
+    
+    return Response({
+        'message': 'Profile created successfully' if created else 'Profile updated successfully',
+        'user': UserSerializer(user).data,
+        'was_created': created
+    })
 
 @api_view(['GET'])
 def list_doctors(request):
@@ -130,3 +202,44 @@ def resolve_patient(request):
         return Response(UserSerializer(patients.first()).data)
     
     return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST'])
+def sync_user_from_blockchain(request):
+    """
+    Auto-recreate user from blockchain data when they connect but don't exist in DB.
+    This handles the case where blockchain has data but local DB was reset.
+    """
+    wallet_address = request.data.get('wallet_address', '').lower()
+    role = request.data.get('role', 'patient')  # Default to patient
+    
+    if not wallet_address or not wallet_address.startswith('0x'):
+        return Response({'error': 'Valid wallet address required'}, status=400)
+    
+    try:
+        with transaction.atomic():
+            # Create user if not exists
+            user, created = User.objects.get_or_create(
+                wallet_address=wallet_address,
+                defaults={
+                    'role': role,
+                    'name': f'User {wallet_address[:6]}...{wallet_address[-4:]}',
+                    'is_active': True
+                }
+            )
+            
+            # If user existed but was soft-deleted, reactivate
+            if not user.is_active:
+                user.is_active = True
+                user.save()
+                created = True
+            
+            return Response({
+                'success': True,
+                'created': created,
+                'user': UserSerializer(user).data,
+                'message': 'User synced from blockchain' if created else 'User already exists'
+            })
+            
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useWeb3 } from '@contexts/Web3Context.jsx'
 import Header from '@components/layout/Header.jsx'
 import Navigation from '@components/layout/Navigation.jsx'
@@ -6,34 +6,32 @@ import PatientPortal from '@components/features/patient/PatientPortal.jsx'
 import DoctorPortal from '@components/features/doctor/DoctorPortal.jsx'
 import ActivityLog from '@components/features/shared/ActivityLog.jsx'
 import WalletModal from '@components/features/wallet/WalletModal.jsx'
+import OnboardingPage from '@components/features/onboarding/OnboardingPage.jsx'
 
 function App() {
-  const { isConnected, account } = useWeb3()
+  const { isConnected, account, connect } = useWeb3()
   const [activeRole, setActiveRole] = useState('patient')
   const [showWalletModal, setShowWalletModal] = useState(false)
+  const [hasMetaMask, setHasMetaMask] = useState(null)
 
-  if (!isConnected) {
+  // Check for MetaMask on mount
+  useEffect(() => {
+    const checkMetaMask = () => {
+      const installed = typeof window !== 'undefined' && !!window.ethereum
+      setHasMetaMask(installed)
+    }
+    checkMetaMask()
+    // Re-check if ethereum becomes available
+    window.addEventListener('ethereum#initialized', checkMetaMask, { once: true })
+  }, [])
+
+  // Show onboarding if no MetaMask or not connected
+  const showOnboarding = !hasMetaMask || !isConnected
+
+  if (showOnboarding) {
     return (
       <div className="container">
-        <div className="header">
-          <h1>MediChain</h1>
-          <div className="flex-row">
-            <button onClick={() => setShowWalletModal(true)} className="primary">
-              Connect Wallet
-            </button>
-          </div>
-        </div>
-        <div className="section" style={{ textAlign: 'center', padding: '64px 32px' }}>
-          <h2 style={{ marginBottom: '16px', color: 'var(--text-muted)' }}>
-            Welcome to MediChain
-          </h2>
-          <p style={{ color: 'var(--text-muted)' }}>
-            Connect your MetaMask wallet to securely manage medical records on the blockchain.
-          </p>
-        </div>
-        {showWalletModal && (
-          <WalletModal onClose={() => setShowWalletModal(false)} />
-        )}
+        <OnboardingPage onConnect={connect} />
       </div>
     )
   }

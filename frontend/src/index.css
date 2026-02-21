@@ -738,3 +738,38 @@ button:disabled {
 .hidden {
   display: none !important;
 }
+
+/* Add at the end of index.css */
+
+.hover-card:hover {
+  border-color: var(--primary-light) !important;
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+
+/* Smooth transitions for interactive elements */
+a[style*="display: flex"] {
+  transition: all 0.2s ease;
+}
+
+a[style*="display: flex"]:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
+}
+
+/* Step indicator animations */
+[style*="cursor: pointer"] {
+  transition: all 0.2s ease;
+}
+
+/* Ensure onboarding is responsive */
+@media (max-width: 640px) {
+  .container {
+    padding: 16px;
+  }
+  
+  /* Stack step indicators on mobile */
+  [style*="display: flex"][style*="justifyContent: center"] {
+    flex-wrap: wrap;
+  }
+}

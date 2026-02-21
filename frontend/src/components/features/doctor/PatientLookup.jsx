@@ -1,5 +1,4 @@
 import React, { useState, useCallback } from 'react'
-import { ethers } from 'ethers'
 import { useWeb3 } from '@contexts/Web3Context.jsx'
 import { apiService } from '@services/api.js'
 import Card from '@components/ui/Card.jsx'
@@ -18,59 +17,47 @@ export default function PatientLookup() {
       return
     }
 
-    // If it looks like an address, validate it
-    if (term.startsWith('0x')) {
-      if (!ethers.isAddress(term)) {
-        setResults([])
-        return
-      }
-      
-      // Direct address lookup
-      setIsSearching(true)
-      try {
-        const userData = await apiService.getUser(term)
-        if (userData.role === 'patient') {
-          setResults([{
-            name: userData.name || `Patient ${term.slice(0, 6)}...`,
-            address: term,
-            dob: userData.date_of_birth || 'Unknown',
-            location: userData.location || 'Unknown'
-          }])
-        } else {
-          setResults([])
-        }
-      } catch (err) {
-        console.log('Patient not found:', err)
-        setResults([])
-      } finally {
-        setIsSearching(false)
-      }
-    } else {
-      // Name search - in production this would hit a search endpoint
-      // For now, show empty or mock results
+    setIsSearching(true)
+    try {
+      // Search by name, email, phone, or ID
+      const patients = await apiService.searchPatients({
+        query: term,
+        type: 'all'
+      })
+      setResults(patients)
+    } catch (err) {
+      console.log('Search failed:', err)
       setResults([])
+    } finally {
+      setIsSearching(false)
     }
   }, [addLog])
 
   const selectPatient = (patient) => {
-    addLog(`Selected patient: ${patient.address.slice(0, 20)}...`, 'info')
-    // Dispatch custom event or use context to populate other forms
-    window.dispatchEvent(new CustomEvent('patientSelected', { detail: patient }))
+    // Dispatch event for other components
+    window.dispatchEvent(new CustomEvent('patientSelected', { 
+      detail: {
+        id: patient.id,
+        name: patient.name,
+        wallet: patient.wallet_address
+      }
+    }))
+    addLog(`Selected patient: ${patient.name}`, 'info')
     setSearchTerm('')
     setResults([])
   }
 
   return (
     <Card>
-      <div className="section-title">Patient Lookup</div>
+      <div className="section-title">Find Patient</div>
       <div className="info-text">
-        Search for patients by wallet address (0x...) or name.
+        Search by name, email, phone number, or patient ID.
       </div>
       
       <div className="search-box">
         <input
           type="text"
-          placeholder="Search by wallet address (0x...) or name..."
+          placeholder="Search patients..."
           value={searchTerm}
           onChange={(e) => searchPatients(e.target.value)}
         />
@@ -90,14 +77,14 @@ export default function PatientLookup() {
             <div className="doctor-info">
               <div className="doctor-name">{patient.name}</div>
               <div className="doctor-meta">
-                {patient.address.slice(0, 20)}... • {patient.location}
+                {patient.email || patient.phone || 'ID: ' + patient.id.slice(-6)}
               </div>
             </div>
           </div>
         ))}
         
         {!isSearching && searchTerm.length >= 3 && results.length === 0 && (
-          <div className="empty">No patients found. Try a valid wallet address (0x...).</div>
+          <div className="empty">No patients found. Try a different search.</div>
         )}
       </div>
     </Card>

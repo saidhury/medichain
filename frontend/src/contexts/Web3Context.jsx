@@ -6,7 +6,6 @@ import { apiService } from '@services/api.js'
 const Web3Context = createContext(null)
 const SEPOLIA_CHAIN_ID = '0xaa36a7'
 
-// Development logger
 const logger = {
   debug: (...args) => console.debug('[Web3Context]', ...args),
   info: (...args) => console.info('[Web3Context]', ...args),
@@ -27,8 +26,16 @@ export function Web3Provider({ children }) {
     encryption: false,
     ipfs: false,
   })
+  // User profile - human readable
+  const [userProfile, setUserProfile] = useState({
+    name: '',
+    role: '',
+    email: '',
+    phone: '',
+    hospital: '',
+    walletAddress: '',
+  })
 
-  // Use ref to track initialization
   const isInitialized = useRef(false)
 
   const addLog = useCallback((message, type = 'info') => {
@@ -37,7 +44,6 @@ export function Web3Provider({ children }) {
     setLogs(prev => [...prev, { time: timestamp, message, type }])
   }, [])
 
-  // Check service health on mount
   useEffect(() => {
     if (isInitialized.current) return
     isInitialized.current = true
@@ -46,17 +52,13 @@ export function Web3Provider({ children }) {
       logger.info('Checking backend service health...')
       const backendOk = await apiService.healthCheck()
       
-      // Check encryption service
       const { encryptionService } = await import('@services/encryption.js')
       const encryptionOk = await encryptionService.healthCheck()
       
-      // Check IPFS (Pinata)
       const { ipfsService } = await import('@services/ipfs.js')
       const ipfsOk = await ipfsService.testConnection()
 
       setServicesStatus({ backend: backendOk, encryption: encryptionOk, ipfs: ipfsOk })
-      
-      logger.info('Service status:', { backend: backendOk, encryption: encryptionOk, ipfs: ipfsOk })
       
       if (!backendOk) addLog('Backend service unavailable', 'warn')
       if (!encryptionOk) addLog('Encryption service unavailable', 'warn')
@@ -106,16 +108,15 @@ export function Web3Provider({ children }) {
       return false
     }
 
-    addLog('Connecting wallet...', 'info')
-    logger.info('Starting wallet connection...')
+    addLog('Connecting...', 'info')
+    logger.info('Starting connection...')
 
     try {
-      // Check network
       const currentChainId = await window.ethereum.request({ method: 'eth_chainId' })
       logger.info('Current chain ID:', currentChainId)
       
       if (currentChainId !== SEPOLIA_CHAIN_ID) {
-        addLog('Switching to Sepolia testnet...', 'warn')
+        addLog('Switching network...', 'warn')
         const switched = await switchToSepolia()
         if (!switched) {
           addLog('Failed to switch network', 'error')
@@ -123,36 +124,42 @@ export function Web3Provider({ children }) {
         }
       }
 
-      // Request accounts
       logger.info('Requesting accounts...')
       const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' })
       logger.info('Accounts received:', accounts.length)
 
-      // Setup ethers
       const newProvider = new ethers.BrowserProvider(window.ethereum)
       const newSigner = await newProvider.getSigner()
       const address = await newSigner.getAddress()
-      const { apiService } = await import('@services/api.js')
-apiService.setWalletAddress(address)
-      const balance = await newProvider.getBalance(address)
       
-      logger.info('Connected address:', address)
-      logger.info('Balance:', ethers.formatEther(balance), 'ETH')
-
-      // Setup contract
+      // Sync with API service
+      const { apiService } = await import('@services/api.js')
+      apiService.setWalletAddress(address)
+      
       const newContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, newSigner)
-      logger.info('Contract initialized at:', CONTRACT_ADDRESS)
 
-      // Register or get user from backend
+      // Fetch or create user profile
+      let userData
       try {
-        const userData = await apiService.getUser(address)
+        userData = await apiService.getUser(address)
         logger.info('Existing user found:', userData.role)
-        addLog(`Welcome back, ${userData.role}`, 'info')
+        addLog(`Welcome back!`, 'info')
       } catch (err) {
-        // User doesn't exist, will need to register
+        // New user - will need to complete profile
         logger.info('New user, registration required')
-        addLog('New user - please select your role', 'info')
+        addLog('Please complete your profile', 'info')
+        userData = { role: 'unknown', wallet_address: address }
       }
+
+      // Set user profile (hide wallet address in main UI)
+      setUserProfile({
+        name: userData.name || '',
+        role: userData.role || 'unknown',
+        email: userData.email || '',
+        phone: userData.phone || '',
+        hospital: userData.hospital || '',
+        walletAddress: address, // Hidden in modal
+      })
 
       setProvider(newProvider)
       setSigner(newSigner)
@@ -161,9 +168,6 @@ apiService.setWalletAddress(address)
       setIsConnected(true)
       setChainId(SEPOLIA_CHAIN_ID)
       
-      addLog(`Connected: ${address.slice(0, 6)}...${address.slice(-4)}`, 'info')
-      
-      // Setup event listeners
       window.ethereum.on('accountsChanged', handleAccountsChanged)
       window.ethereum.on('chainChanged', handleChainChanged)
       
@@ -176,13 +180,21 @@ apiService.setWalletAddress(address)
   }
 
   const disconnect = useCallback(() => {
-    logger.info('Disconnecting wallet...')
+    logger.info('Disconnecting...')
     setProvider(null)
     setSigner(null)
     setContract(null)
     setAccount(null)
     setIsConnected(false)
     setChainId(null)
+    setUserProfile({
+      name: '',
+      role: '',
+      email: '',
+      phone: '',
+      hospital: '',
+      walletAddress: '',
+    })
     addLog('Disconnected', 'info')
     
     if (window.ethereum) {
@@ -192,26 +204,22 @@ apiService.setWalletAddress(address)
   }, [addLog])
 
   const handleAccountsChanged = useCallback(async (accounts) => {
-  logger.info('Accounts changed:', accounts)
-  if (accounts.length === 0) {
-    const { apiService } = await import('@services/api.js')
-    apiService.setWalletAddress('')
-    disconnect()
-  } else {
-    setAccount(accounts[0])
-    const { apiService } = await import('@services/api.js')
-    apiService.setWalletAddress(accounts[0])
-    addLog('Account changed', 'info')
-    connect()
-  }
-}, [disconnect, addLog])
+    logger.info('Accounts changed:', accounts)
+    if (accounts.length === 0) {
+      disconnect()
+    } else {
+      setAccount(accounts[0])
+      setUserProfile(prev => ({ ...prev, walletAddress: accounts[0] }))
+      addLog('Account changed', 'info')
+      connect()
+    }
+  }, [disconnect, addLog])
 
   const handleChainChanged = useCallback(() => {
     logger.info('Chain changed, reloading...')
     window.location.reload()
   }, [])
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (window.ethereum) {
@@ -230,6 +238,8 @@ apiService.setWalletAddress(address)
     chainId,
     logs,
     servicesStatus,
+    userProfile,
+    setUserProfile,
     addLog,
     connect,
     disconnect,

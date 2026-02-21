@@ -3,6 +3,17 @@ from users.models import User
 
 
 class MedicalRecord(models.Model):
+    RECORD_TYPES = [
+        ('lab', 'Lab Results'),
+        ('imaging', 'Imaging & Radiology'),
+        ('prescription', 'Prescription'),
+        ('discharge', 'Discharge Summary'),
+        ('referral', 'Referral Letter'),
+        ('vaccination', 'Immunization Record'),
+        ('ayush', 'AYUSH Record'),
+        ('unknown', 'Unknown'),
+    ]
+    
     record_id = models.AutoField(primary_key=True)
     patient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='records_as_patient', to_field='wallet_address')
     uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='records_as_doctor', to_field='wallet_address')
@@ -11,6 +22,11 @@ class MedicalRecord(models.Model):
     filename = models.CharField(max_length=255)
     file_size = models.IntegerField()
     encryption_iv = models.CharField(max_length=50, null=True, blank=True)
+    
+    # NEW FIELDS
+    record_type = models.CharField(max_length=20, choices=RECORD_TYPES, default='unknown')
+    description = models.TextField(blank=True, default='')
+    
     created_at = models.DateTimeField(auto_now_add=True)
     tx_hash = models.CharField(max_length=66, null=True, blank=True)
     

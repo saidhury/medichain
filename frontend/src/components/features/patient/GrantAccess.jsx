@@ -8,72 +8,104 @@ import Input from '@components/ui/Input.jsx'
 import Button from '@components/ui/Button.jsx'
 
 export default function GrantAccess({ onGrant }) {
-  const { account, addLog } = useWeb3()
+  const { account, userProfile, addLog } = useWeb3()
   const { grantAccess, loading, error } = useMedicalRecords()
   const [formData, setFormData] = useState({
-    name: '',
+    doctorName: '',
+    doctorEmail: '',
     hospital: '',
-    address: '',
+    walletAddress: '', // Hidden technical field
     duration: 'permanent',
     notes: ''
   })
-  const [status, setStatus] = useState('idle') // idle, checking, granting, success, error
+  const [status, setStatus] = useState('idle')
+  const [searching, setSearching] = useState(false)
+  const [foundDoctors, setFoundDoctors] = useState([])
 
-  const validateAddress = (addr) => {
-    if (!ethers.isAddress(addr)) {
-      addLog('Invalid Ethereum address format', 'error')
-      return false
-    }
-    if (addr.toLowerCase() === account?.toLowerCase()) {
-      addLog('Cannot grant access to yourself', 'error')
-      return false
-    }
-    return true
-  }
-
-  const handleSubmit = async () => {
-    if (!formData.name || !formData.address) {
-      addLog('Please fill in required fields (name and address)', 'error')
+  // Search doctor by name/email instead of wallet
+  const searchDoctor = async () => {
+    if (!formData.doctorName && !formData.doctorEmail) {
+      addLog('Please enter doctor name or email', 'error')
       return
     }
 
-    if (!validateAddress(formData.address)) return
-
-    setStatus('checking')
+    setSearching(true)
     try {
-      // Check if doctor exists in backend
-      let doctorExists = false
-      try {
-        const doctorData = await apiService.getUser(formData.address)
-        if (doctorData.role === 'doctor') {
-          doctorExists = true
-          console.info('[GrantAccess] Doctor verified in backend:', doctorData)
-        }
-      } catch (err) {
-        console.warn('[GrantAccess] Doctor not found in backend, proceeding anyway')
+      // This would search your backend for doctors
+      const doctors = await apiService.searchDoctors({
+        name: formData.doctorName,
+        email: formData.doctorEmail,
+        hospital: formData.hospital
+      })
+      setFoundDoctors(doctors)
+      if (doctors.length === 0) {
+        addLog('No doctors found. Please check details or enter wallet address manually.', 'warn')
       }
+    } catch (err) {
+      addLog('Search failed', 'error')
+    } finally {
+      setSearching(false)
+    }
+  }
 
-      setStatus('granting')
-      const success = await grantAccess(formData.address)
+  const selectDoctor = (doctor) => {
+    setFormData({
+      ...formData,
+      doctorName: doctor.name,
+      hospital: doctor.hospital,
+      walletAddress: doctor.wallet_address
+    })
+    setFoundDoctors([])
+    addLog(`Selected: ${doctor.name}`, 'info')
+  }
+
+  const handleSubmit = async () => {
+    // Fallback: if no wallet address from search, try to use entered value
+    let doctorWallet = formData.walletAddress
+    
+    if (!doctorWallet && formData.doctorEmail) {
+      // Try to resolve email to wallet (would need backend support)
+      addLog('Resolving doctor...', 'info')
+      try {
+        const resolved = await apiService.resolveDoctor(formData.doctorEmail)
+        doctorWallet = resolved.wallet_address
+      } catch (err) {
+        addLog('Could not find doctor. Please ask for their ID code.', 'error')
+        return
+      }
+    }
+
+    if (!doctorWallet || !ethers.isAddress(doctorWallet)) {
+      addLog('Invalid doctor ID. Please search or enter a valid address.', 'error')
+      return
+    }
+
+    setStatus('granting')
+    try {
+      const success = await grantAccess(doctorWallet)
       
       if (success) {
         setStatus('success')
-        // Clear form
-        setFormData({ name: '', hospital: '', address: '', duration: 'permanent', notes: '' })
+        setFormData({ 
+          doctorName: '', 
+          doctorEmail: '', 
+          hospital: '', 
+          walletAddress: '', 
+          duration: 'permanent', 
+          notes: '' 
+        })
         onGrant?.()
         setTimeout(() => setStatus('idle'), 3000)
       } else {
         setStatus('error')
       }
     } catch (err) {
-      console.error('[GrantAccess] Error:', err)
       setStatus('error')
     }
   }
 
   const getButtonText = () => {
     switch (status) {
-      case 'checking': return 'Verifying Doctor...'
       case 'granting': return 'Granting Access...'
       case 'success': return '✓ Access Granted!'
       case 'error': return 'Failed - Try Again'
@@ -83,10 +115,9 @@ export default function GrantAccess({ onGrant }) {
 
   return (
     <Card>
-      <div className="section-title">Grant Access to Doctor</div>
+      <div className="section-title">Share Records With Doctor</div>
       <div className="info-text">
-        Enter your doctor's details to securely share your medical records. 
-        You control the duration and can revoke access anytime.
+        Search for your doctor by name, email, or hospital. They will be able to view and upload records for you.
       </div>
       
       {error && (
@@ -98,30 +129,80 @@ export default function GrantAccess({ onGrant }) {
           marginBottom: '16px',
           fontSize: '0.875rem'
         }}>
-          Error: {error}
+          {error}
         </div>
       )}
 
       <Input
-        placeholder="Doctor's full name (e.g., Dr. Shivam Kumar)"
-        value={formData.name}
-        onChange={(e) => setFormData({...formData, name: e.target.value})}
+        placeholder="Doctor's name (e.g., Dr. Shivam Kumar)"
+        value={formData.doctorName}
+        onChange={(e) => setFormData({...formData, doctorName: e.target.value})}
         disabled={loading}
       />
       
       <Input
-        placeholder="Hospital/Clinic name"
+        placeholder="Doctor's email"
+        type="email"
+        value={formData.doctorEmail}
+        onChange={(e) => setFormData({...formData, doctorEmail: e.target.value})}
+        disabled={loading}
+      />
+      
+      <Input
+        placeholder="Hospital or clinic name"
         value={formData.hospital}
         onChange={(e) => setFormData({...formData, hospital: e.target.value})}
         disabled={loading}
       />
-      
-      <Input
-        placeholder="Doctor's wallet address (0x...)"
-        value={formData.address}
-        onChange={(e) => setFormData({...formData, address: e.target.value})}
-        disabled={loading}
-      />
+
+      {foundDoctors.length > 0 && (
+        <div style={{ marginBottom: '16px' }}>
+          <div className="info-text">Select a doctor:</div>
+          {foundDoctors.map((doc, idx) => (
+            <div 
+              key={idx}
+              className="doctor-card"
+              onClick={() => selectDoctor(doc)}
+              style={{ marginBottom: '8px' }}
+            >
+              <div className="doctor-avatar">👨‍⚕️</div>
+              <div className="doctor-info">
+                <div className="doctor-name">{doc.name}</div>
+                <div className="doctor-meta">{doc.hospital} • {doc.specialty}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Hidden wallet address field - shown only if search fails */}
+      {!formData.walletAddress && (
+        <details style={{ marginBottom: '14px' }}>
+          <summary style={{ color: 'var(--text-muted)', fontSize: '0.875rem', cursor: 'pointer' }}>
+            Can't find doctor? Enter ID code manually
+          </summary>
+          <Input
+            placeholder="Doctor's ID code (0x...)"
+            value={formData.walletAddress}
+            onChange={(e) => setFormData({...formData, walletAddress: e.target.value})}
+            disabled={loading}
+            style={{ marginTop: '8px' }}
+          />
+        </details>
+      )}
+
+      {formData.walletAddress && (
+        <div style={{
+          padding: '8px 12px',
+          background: 'var(--secondary-soft)',
+          borderRadius: '8px',
+          marginBottom: '14px',
+          fontSize: '0.875rem',
+          color: 'var(--secondary)'
+        }}>
+          ✓ Doctor verified: {formData.doctorName || 'Unknown'}
+        </div>
+      )}
       
       <select
         value={formData.duration}
@@ -143,15 +224,27 @@ export default function GrantAccess({ onGrant }) {
         disabled={loading}
       />
       
-      <Button 
-        onClick={handleSubmit} 
-        primary 
-        loading={loading || status === 'checking' || status === 'granting'} 
-        fullWidth
-        style={status === 'success' ? { background: 'var(--success)' } : {}}
-      >
-        {getButtonText()}
-      </Button>
+      <div className="flex-row" style={{ gap: '12px' }}>
+        {!formData.walletAddress && (
+          <Button 
+            onClick={searchDoctor} 
+            loading={searching}
+            secondary
+            style={{ flex: 1 }}
+          >
+            Search Doctor
+          </Button>
+        )}
+        <Button 
+          onClick={handleSubmit} 
+          primary 
+          loading={loading || status === 'granting'} 
+          disabled={!formData.walletAddress}
+          style={{ flex: formData.walletAddress ? 1 : 2 }}
+        >
+          {getButtonText()}
+        </Button>
+      </div>
     </Card>
   )
 }

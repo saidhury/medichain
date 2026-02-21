@@ -130,3 +130,13 @@ def get_record_by_cid(request, cid):
         return Response(MedicalRecordSerializer(record).data)
     except MedicalRecord.DoesNotExist:
         return Response({'error': 'Record not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+def get_record_by_cid(request, cid):
+    """Get record metadata by IPFS CID"""
+    try:
+        record = MedicalRecord.objects.get(ipfs_cid=cid)
+        return Response(MedicalRecordSerializer(record).data)
+    except MedicalRecord.DoesNotExist:
+        return Response({'error': 'Record not found'}, status=status.HTTP_404_NOT_FOUND)

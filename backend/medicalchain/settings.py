@@ -71,6 +71,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # CORS
 CORS_ALLOW_ALL_ORIGINS = True
 
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'X-Wallet-Address',
+    'x-wallet-address',
+]
+
 # Custom settings
 ENCRYPTION_SERVICE_URL = os.getenv('ENCRYPTION_SERVICE_URL', 'http://localhost:8001')
 PINATA_API_KEY = os.getenv('PINATA_API_KEY')

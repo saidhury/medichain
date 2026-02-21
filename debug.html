@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MediChain Debug</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js"></script>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #f0f0f0; }
+        .box { background: white; padding: 15px; margin-bottom: 15px; border: 1px solid #ccc; }
+        input { width: 300px; padding: 5px; }
+        button { padding: 8px 15px; cursor: pointer; margin: 5px; }
+        #log { background: #000; color: #0f0; padding: 10px; height: 200px; overflow-y: scroll; white-space: pre-wrap; }
+        .error { color: #f00; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<h2>🏥 MediChain Debugger</h2>
+
+<div class="box">
+    <button id="connectBtn" onclick="connect()" disabled>Waiting for MetaMask...</button>
+    <span id="walletDisplay">Not connected</span>
+</div>
+
+<div id="app" class="hidden">
+    <div class="box">
+        <h3>Grant Access to Doctor</h3>
+        <input type="text" id="doctorAddr" placeholder="0x...">
+        <button onclick="grant()">Grant</button>
+    </div>
+
+    <div class="box">
+        <h3>Authorized Doctors <button onclick="loadDoctors()">Refresh</button></h3>
+        <div id="doctorsList">Click refresh to load...</div>
+    </div>
+
+    <div class="box">
+        <h3>My Records <button onclick="loadRecords()">Refresh</button></h3>
+        <table id="recordsTable" border="1" cellpadding="5">
+            <thead>
+                <tr><th>Date</th><th>Doctor</th><th>CID</th><th>Hash</th></tr>
+            </thead>
+            <tbody id="recordsBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="box">
+    <h3>Log</h3>
+    <div id="log"></div>
+    <button onclick="clearLog()">Clear</button>
+</div>
+
+<script>
+// CONFIG
+const CONTRACT_ADDRESS = "0x369dB59e598Af7e37f5Ef5879b2eA0144904C7AE";
+
+const ABI = [
+    "function grantAccess(address _doctor) external",
+    "function revokeAccess(address _doctor) external", 
+    "function hasAccess(address _patient, address _doctor) external view returns (bool)",
+    "function getMyRecords() external view returns (tuple(string ipfsCID, bytes32 fileHash, address patient, address uploadedBy, uint256 timestamp, bool exists)[])"
+];
+
+let provider, signer, contract, userAddress;
+
+function log(msg, isError) {
+    const el = document.getElementById('log');
+    const time = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.textContent = `[${time}] ${msg}`;
+    if (isError) line.style.color = '#f00';
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+    console.log(msg);
+}
+
+function clearLog() {
+    document.getElementById('log').innerHTML = '';
+}
+
+// Wait for MetaMask to inject ethereum
+function init() {
+    log('Checking for MetaMask...');
+    
+    if (window.ethereum) {
+        log('MetaMask found!');
+        document.getElementById('connectBtn').disabled = false;
+        document.getElementById('connectBtn').textContent = 'Connect MetaMask';
+        setupListeners();
+    } else {
+        log('MetaMask not found yet, waiting...');
+        // Retry in 1 second
+        setTimeout(init, 1000);
+    }
+}
+
+function setupListeners() {
+    window.ethereum.on('accountsChanged', (accounts) => {
+        if (accounts.length === 0) {
+            log('Disconnected');
+            location.reload();
+        } else {
+            log('Account changed, reloading...');
+            location.reload();
+        }
+    });
+    
+    window.ethereum.on('chainChanged', () => {
+        location.reload();
+    });
+}
+
+async function connect() {
+    try {
+        log('Requesting accounts...');
+        
+        // This will prompt user to connect if not already
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        
+        if (!accounts || accounts.length === 0) {
+            throw new Error('No accounts returned');
+        }
+        
+        provider = new ethers.BrowserProvider(window.ethereum);
+        signer = await provider.getSigner();
+        userAddress = await signer.getAddress();
+        
+        contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+        
+        document.getElementById('walletDisplay').textContent = userAddress;
+        document.getElementById('connectBtn').textContent = 'Connected';
+        document.getElementById('app').classList.remove('hidden');
+        
+        log(`Connected: ${userAddress}`);
+        
+        await loadDoctors();
+        await loadRecords();
+        
+    } catch (err) {
+        log(`Connect failed: ${err.message}`, true);
+        console.error(err);
+    }
+}
+
+async function grant() {
+    const docAddr = document.getElementById('doctorAddr').value.trim();
+    
+    if (!ethers.isAddress(docAddr)) {
+        alert('Invalid address');
+        return;
+    }
+    
+    if (docAddr.toLowerCase() === userAddress.toLowerCase()) {
+        alert('Cannot grant to yourself');
+        return;
+    }
+    
+    try {
+        log(`Granting access to ${docAddr}...`);
+        const tx = await contract.grantAccess(docAddr);
+        log(`TX: ${tx.hash}`);
+        await tx.wait();
+        log('✅ Granted');
+        document.getElementById('doctorAddr').value = '';
+        await loadDoctors();
+    } catch (err) {
+        log(`Grant failed: ${err.reason || err.message}`, true);
+    }
+}
+
+async function revoke(docAddr) {
+    if (!confirm(`Revoke ${docAddr}?`)) return;
+    
+    try {
+        log(`Revoking ${docAddr}...`);
+        const tx = await contract.revokeAccess(docAddr);
+        await tx.wait();
+        log('✅ Revoked');
+        await loadDoctors();
+    } catch (err) {
+        log(`Revoke failed: ${err.reason || err.message}`, true);
+    }
+}
+
+async function loadDoctors() {
+    try {
+        log('Loading doctors...');
+        const records = await contract.getMyRecords();
+        const doctorSet = new Set();
+        
+        records.forEach(r => {
+            if (r.uploadedBy.toLowerCase() !== userAddress.toLowerCase()) {
+                doctorSet.add(r.uploadedBy);
+            }
+        });
+        
+        const doctors = Array.from(doctorSet);
+        const list = document.getElementById('doctorsList');
+        
+        if (doctors.length === 0) {
+            list.innerHTML = '<p>No doctors found</p>';
+            return;
+        }
+        
+        let html = '<ul>';
+        for (const doc of doctors) {
+            html += `<li>${doc} <button onclick="revoke('${doc}')">Revoke</button></li>`;
+        }
+        html += '</ul>';
+        list.innerHTML = html;
+        log(`Found ${doctors.length} doctors`);
+    } catch (err) {
+        log(`Load doctors failed: ${err.message}`, true);
+    }
+}
+
+async function loadRecords() {
+    try {
+        log('Loading records...');
+        const records = await contract.getMyRecords();
+        const tbody = document.getElementById('recordsBody');
+        tbody.innerHTML = '';
+        
+        if (records.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4">No records</td></tr>';
+            return;
+        }
+        
+        [...records].reverse().forEach(r => {
+            const row = tbody.insertRow();
+            row.insertCell(0).textContent = new Date(Number(r.timestamp) * 1000).toLocaleString();
+            row.insertCell(1).textContent = r.uploadedBy.slice(0, 8) + '...';
+            row.insertCell(2).innerHTML = `<a href="https://gateway.pinata.cloud/ipfs/${r.ipfsCID}" target="_blank">${r.ipfsCID.slice(0, 12)}...</a>`;
+            row.insertCell(3).textContent = r.fileHash.slice(0, 10) + '...';
+        });
+        
+        log(`Loaded ${records.length} records`);
+    } catch (err) {
+        log(`Load records failed: ${err.message}`, true);
+    }
+}
+
+// Start initialization
+window.addEventListener('load', init);
+</script>
+
+</body>
+</html>

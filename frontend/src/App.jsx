@@ -1,93 +1,58 @@
-import React, { useEffect, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import Navbar from './components/Navbar';
-import Login from './pages/Login';
-import PatientDashboard from './pages/PatientDashboard';
-import DoctorDashboard from './pages/DoctorDashboard';
-import { useWallet } from './hooks/useWallet';
+import React, { useState } from 'react'
+import { useWeb3 } from '@contexts/Web3Context.jsx'
+import Header from '@components/layout/Header.jsx'
+import Navigation from '@components/layout/Navigation.jsx'
+import PatientPortal from '@components/features/patient/PatientPortal.jsx'
+import DoctorPortal from '@components/features/doctor/DoctorPortal.jsx'
+import ActivityLog from '@components/features/shared/ActivityLog.jsx'
+import WalletModal from '@components/features/wallet/WalletModal.jsx'
 
 function App() {
-  const { 
-    account, 
-    role, 
-    connectWallet,
-    disconnectWallet, 
-    isConnecting,
-    isMetaMaskConnected,
-    error
-  } = useWallet();
+  const { isConnected, account } = useWeb3()
+  const [activeRole, setActiveRole] = useState('patient')
+  const [showWalletModal, setShowWalletModal] = useState(false)
 
-  const [isReady, setIsReady] = useState(false);
-
-  useEffect(() => {
-    // Small delay to let MetaMask detection happen
-    setTimeout(() => setIsReady(true), 500);
-  }, []);
-
-  if (!isReady) {
+  if (!isConnected) {
     return (
-      <div className="landing">
-        <div className="hero">
-          <div className="spin" style={{ 
-            width: 48, height: 48, 
-            border: '4px solid var(--primary)', 
-            borderTopColor: 'transparent', 
-            borderRadius: '50%',
-            margin: '0 auto 1rem'
-          }}></div>
-          <p>Detecting MetaMask...</p>
+      <div className="container">
+        <div className="header">
+          <h1>MediChain</h1>
+          <div className="flex-row">
+            <button onClick={() => setShowWalletModal(true)} className="primary">
+              Connect Wallet
+            </button>
+          </div>
         </div>
+        <div className="section" style={{ textAlign: 'center', padding: '64px 32px' }}>
+          <h2 style={{ marginBottom: '16px', color: 'var(--text-muted)' }}>
+            Welcome to MediChain
+          </h2>
+          <p style={{ color: 'var(--text-muted)' }}>
+            Connect your MetaMask wallet to securely manage medical records on the blockchain.
+          </p>
+        </div>
+        {showWalletModal && (
+          <WalletModal onClose={() => setShowWalletModal(false)} />
+        )}
       </div>
-    );
+    )
   }
 
-  // Not logged in - show login
-  if (!account) {
-    return (
-      <Router>
-        <Login 
-          onConnect={connectWallet}
-          isConnecting={isConnecting}
-          error={error}
-        />
-      </Router>
-    );
-  }
-
-  // Logged in - show dashboard
   return (
-    <Router>
-      <div className="app">
-        <Navbar 
-          account={account} 
-          role={role} 
-          isMetaMaskConnected={isMetaMaskConnected}
-          onDisconnect={disconnectWallet}
-        />
-        
-        <main className="container">
-          <Routes>
-            <Route 
-              path="/" 
-              element={
-                role === 'patient' ? <Navigate to="/patient" replace /> :
-                role === 'doctor' ? <Navigate to="/doctor" replace /> :
-                <Navigate to="/" replace />
-              } 
-            />
-            <Route 
-              path="/patient" 
-              element={role === 'patient' ? <PatientDashboard account={account} /> : <Navigate to="/" replace />} 
-            />
-            <Route 
-              path="/doctor" 
-              element={role === 'doctor' ? <DoctorDashboard account={account} /> : <Navigate to="/" replace />} 
-            />
-          </Routes>
-        </main>
-      </div>
-    </Router>
-  );
+    <div className="container">
+      <Header onWalletClick={() => setShowWalletModal(true)} />
+      
+      <Navigation activeRole={activeRole} onRoleChange={setActiveRole} />
+      
+      {activeRole === 'patient' ? <PatientPortal /> : <DoctorPortal />}
+      
+      <ActivityLog />
+      
+      {showWalletModal && (
+        <WalletModal onClose={() => setShowWalletModal(false)} />
+      )}
+    </div>
+  )
 }
 
-export default App;
+export default App

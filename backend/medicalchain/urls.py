@@ -16,4 +16,5 @@ urlpatterns = [
     path('api/records/patient/<str:patient_address>/', record_views.get_patient_records, name='patient_records'),
     path('api/records/<int:record_id>/tx/', record_views.update_tx_hash, name='update_tx'),
     path('api/records/cid/<str:cid>/', record_views.get_record_by_cid, name='get_by_cid'),
+    path('api/records/cid/<str:cid>/', record_views.get_record_by_cid, name='get_by_cid'),
 ]
